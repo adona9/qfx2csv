@@ -1,11 +1,17 @@
 from ofxtools import OFXTree
+from ofxtools.models.invest.transactions import BUYOPT
 from ofxtools.models.invest.transactions import BUYSTOCK
+from ofxtools.models.invest.transactions import CLOSUREOPT
+from ofxtools.models.invest.transactions import SELLOPT
 from ofxtools.models.invest.transactions import SELLSTOCK
 from ofxtools.models.invest.transactions import INCOME
 from ofxtools.models.invest.transactions import INVBANKTRAN
+
 import csv
 import sys
+import re
 import argparse
+from datetime import datetime, timezone
 
 
 # https://ofxtools.readthedocs.io/en/latest/parser.html
@@ -15,6 +21,11 @@ unknown_security = {
     'ticker': 'unknown',
     'name': 'unknown'
 }
+
+
+def get_ticker_from_option_cusip(cusip):
+    match = re.match(r'^([A-Za-z]+)', cusip)
+    return match.group(1) if match else '???'
 
 
 def get_securities_map(securities):
@@ -45,6 +56,32 @@ def convert_buy_sell_stock(tx, securities_map):
     }
 
 
+def convert_option_transaction(tx):
+    # <SELLOPT(invsell=<INVSELL(invtran=<INVTRAN(fitid='4ZU71131-20250204-4', dttrade=datetime.datetime(2025, 2, 4, 12, 0, tzinfo=<UTC>), dtsettle=datetime.datetime(2025, 2, 5, 12, 0, tzinfo=<UTC>))>, secid=<SECID(uniqueid='NOW250321C01040000', uniqueidtype='CUSIP')>, units=Decimal('-1.0000'), unitprice=Decimal('31.0100'), commission=Decimal('0.5000'), fees=Decimal('0.1300'), total=Decimal('3100.3700'), subacctsec='MARGIN', subacctfund='MARGIN')>, optselltype='SELLTOOPEN', shperctrct=100)>
+    inv = tx.invbuy if type(tx) == BUYOPT else tx.invsell
+    return {
+        'date': inv.dttrade,
+        'tx_type': tx.optbuytype if type(tx) == BUYOPT else tx.optselltype,
+        'name': inv.secid.uniqueid,
+        'amount': inv.total,
+        'ticker': get_ticker_from_option_cusip(inv.secid.uniqueid),
+        'units': inv.units,
+        'unit_price': inv.unitprice
+    }
+
+
+def convert_option_closure(tx):
+    # <CLOSUREOPT(invtran=<INVTRAN(fitid='4ZU71131-20250214-4', dttrade=datetime.datetime(2025, 2, 14, 12, 0, tzinfo=<UTC>), dtsettle=datetime.datetime(2025, 2, 14, 12, 0, tzinfo=<UTC>))>, secid=<SECID(uniqueid='XLY250214C00227500', uniqueidtype='CUSIP')>, optaction='EXPIRE', units=Decimal('1.0000'), shperctrct=100, subacctsec='MARGIN')>
+    return {
+        'date': tx.invtran.dttrade,
+        'tx_type': tx.optaction,
+        'name': tx.secid.uniqueid,
+        'amount': 0,
+        'ticker': get_ticker_from_option_cusip(tx.secid.uniqueid),
+        'units': tx.units,
+        'unit_price': 0
+    }
+
 def convert_income(tx, securities_map):
     # <INCOME(invtran=<INVTRAN(fitid='4ZW30539-20230428-1', dttrade=datetime.datetime(2023, 4, 28, 12, 0, tzinfo=<UTC>))>, secid=<SECID(uniqueid='46090E10', uniqueidtype='CUSIP')>, incometype='DIV', total=Decimal('1.8900'), subacctsec='MARGIN', subacctfund='MARGIN')>
     sec = securities_map[tx.uniqueid] if tx.uniqueid in securities_map.keys() else unknown_security
@@ -72,6 +109,7 @@ def convert_bank_transaction(tx):
     }
 
 
+
 def convert_to_csv_row(tx, securities_map):
     tx_type = type(tx)
     if tx_type == BUYSTOCK or tx_type == SELLSTOCK:
@@ -80,8 +118,20 @@ def convert_to_csv_row(tx, securities_map):
         tx_out = convert_income(tx, securities_map)
     elif tx_type == INVBANKTRAN:
         tx_out = convert_bank_transaction(tx)
+    elif tx_type == SELLOPT or tx_type == BUYOPT:
+        tx_out = convert_option_transaction(tx)
+    elif tx_type == CLOSUREOPT:
+        tx_out = convert_option_closure(tx)
     else:
-        tx_out = {}
+        tx_out = {
+            'date': None,
+            'tx_type': tx_type,
+            'name': '???',
+            'amount': 0,
+            'ticker': '',
+            'units': 0,
+            'unit_price': 0
+        }
     return tx_out
 
 
@@ -98,7 +148,7 @@ def convert_qfx_to_csv(qfx_file, output_file):
             # Assuming you want to extract specific transaction fields like date, amount, payee, etc.
             txs_out.append(convert_to_csv_row(tx, securities_map))
 
-    sorted_txs = sorted(txs_out, key=lambda t: t['date'])
+    sorted_txs = sorted(txs_out, key=lambda t: t['date'] if 'date' in t else datetime(1970, 1, 1, tzinfo=timezone.utc))
 
     # Write transaction data as CSV
     #with open(csv_file, 'w', newline='') as csvfile:
