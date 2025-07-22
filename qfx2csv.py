@@ -1,3 +1,8 @@
+import json
+import os
+from decimal import Decimal
+
+import yfinance as yf
 from ofxtools import OFXTree
 from ofxtools.models.invest.transactions import BUYOPT
 from ofxtools.models.invest.transactions import BUYSTOCK
@@ -29,6 +34,15 @@ def get_ticker_from_option_cusip(cusip):
 
 
 def get_securities_map(securities):
+    # ofx.securities[40].spec.keys() dict_keys(['secinfo', 'opttype', 'strikeprice', 'dtexpire', 'shperctrct', 'secid', 'assetclass', 'fiassetclass'])
+    # ofx.securities[40].secinfo.secname 'XLK Jan 31 2025 240.00 Call'
+    # ofx.securities[40].secinfo.secid.uniqueid 'XLK250131C00240000'
+    # ofx.securities[40].secinfo.ticker 'XLK   250131C00240000'
+    # ofx.securities[40].opttype 'CALL'
+    # ofx.securities[40].strikeprice Decimal('240.00')
+    # ofx.securities[40].dtexpire datetime.datetime(2025, 1, 31, 12, 0, tzinfo=<UTC>)
+    # ofx.securities[40].shperctrct 100
+    # ofx.securities[40].secid None
     sec_map = {}
     for s in securities:
         sec_map[s.secinfo.secid.uniqueid] = {
@@ -91,8 +105,8 @@ def convert_income(tx, securities_map):
         'sec_name': sec['name'],
         'amount': tx.total,
         'ticker': sec['ticker'],
-        'units': '',
-        'unit_price': ''
+        'units': 0,
+        'unit_price': 0
     }
 
 
@@ -104,8 +118,8 @@ def convert_bank_transaction(tx):
         'name': tx.stmttrn.name,
         'amount': tx.stmttrn.trnamt,
         'ticker': '',
-        'units': '',
-        'unit_price': ''
+        'units': 0,
+        'unit_price': 0
     }
 
 
@@ -135,27 +149,151 @@ def convert_to_csv_row(tx, securities_map):
     return tx_out
 
 
-def convert_qfx_to_csv(qfx_file, output_file):
-    # Load QFX file
-    ofx_tree = OFXTree()
-    ofx_tree.parse(qfx_file)
-    ofx = ofx_tree.convert()
-    securities_map = get_securities_map(ofx.securities)
-    # Extract transaction data
+def get_transactions(ofx, securities_map):
     txs_out = []
     for statement in ofx.statements:
         for tx in statement.transactions:
             # Assuming you want to extract specific transaction fields like date, amount, payee, etc.
             txs_out.append(convert_to_csv_row(tx, securities_map))
 
-    sorted_txs = sorted(txs_out, key=lambda t: t['date'] if 'date' in t else datetime(1970, 1, 1, tzinfo=timezone.utc))
+    return sorted(txs_out, key=lambda t: t['date'] if 'date' in t else datetime(1970, 1, 1, tzinfo=timezone.utc))
 
+
+def get_positions(ofx, securities_map):
+    # ofx.statements[0].spec.keys() dict_keys(['dtasof', 'curdef', 'invacctfrom', 'invtranlist', 'invposlist', 'invbal', 'invoolist', 'mktginfo', 'inv401k', 'inv401kbal'])
+    # ofx.statements[0].dtasof datetime.datetime(2025, 7, 9, 12, 0, tzinfo=<UTC>)
+    # ofx.statements[0].invtranlist[0] <BUYSTOCK(invbuy=<INVBUY(invtran=<INVTRAN(fitid='4ZU71131-20250204-1', dttrade=datetime.datetime(2025, 2, 4, 12, 0, tzinfo=<UTC>), dtsettle=datetime.datetime(2025, 2, 5, 12, 0, tzinfo=<UTC>))>, secid=<SECID(uniqueid='02072L56', uniqueidtype='CUSIP')>, units=Decimal('100.0000'), unitprice=Decimal('110.7960'), commission=Decimal('0.0000'), total=Decimal('-11079.6000'), subacctsec='MARGIN', subacctfund='MARGIN')>, buytype='BUY')>
+    # ofx.statements[0].invposlist[0].spec.keys() dict_keys(['invpos', 'unitsstreet', 'unitsuser', 'reinvdiv'])
+    # ofx.statements[0].invposlist[0].invpos.spec.keys() dict_keys(['secid', 'heldinacct', 'postype', 'units', 'unitprice', 'mktval', 'avgcostbasis', 'dtpriceasof', 'currency', 'memo', 'inv401ksource'])
+    # ofx.statements[0].invposlist[0].invpos.secid <SECID(uniqueid='00123Q10', uniqueidtype='CUSIP')>
+    # ofx.statements[0].invposlist[0].invpos.postype LONG
+    # ofx.statements[0].invposlist[0].invpos.units Decimal('300.0000')
+    # ofx.statements[0].invposlist[0].invpos.unitprice Decimal('9.4200')
+    # ofx.statements[0].invposlist[0].invpos.mktval Decimal('2826.0000')
+    # ofx.statements[0].invposlist[0].invpos.avgcostbasis None
+    # ofx.statements[0].positions[0].spec.keys() dict_keys(['invpos', 'unitsstreet', 'unitsuser', 'reinvdiv'])
+    # ofx.statements[0].positions[0].invpos.spec.keys() dict_keys(['secid', 'heldinacct', 'postype', 'units', 'unitprice', 'mktval', 'avgcostbasis', 'dtpriceasof', 'currency', 'memo', 'inv401ksource'])
+    positions = []
+    for ofx_statement in ofx.statements:
+        for ofx_position in ofx_statement.positions:
+            security = securities_map[ofx_position.invpos.secid.uniqueid]
+            position = {
+                'secid': ofx_position.invpos.secid.uniqueid,
+                'ticker': security['ticker'],
+                'name': security['name'],
+                'type': ofx_position.invpos.postype,
+                'units': ofx_position.invpos.units,
+                'unit_price': ofx_position.invpos.unitprice,
+                'market_value': ofx_position.invpos.mktval
+            }
+            positions.append(position)
+    return positions
+
+
+def to_csv(transactions, file_name):
     # Write transaction data as CSV
-    #with open(csv_file, 'w', newline='') as csvfile:
-    with output_file as csvfile:
+    with open(file_name, 'w', newline='', encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(sorted_txs[0].keys())  # CSV header
-        writer.writerows(tx.values() for tx in sorted_txs)
+        writer.writerow(transactions[0].keys())  # CSV header
+        writer.writerows(tx.values() for tx in transactions)
+
+
+def custom_serializer(obj):
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    elif isinstance(obj, Decimal):
+        return str(obj)
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+
+def to_json(transactions, file_name):
+    with open(file_name, "w", encoding="utf-8") as jsonfile:
+        json.dump(transactions, jsonfile, default = custom_serializer, indent = 2)
+
+
+def parse_ofx(qfx_file):
+    # Load QFX file
+    ofx_tree = OFXTree()
+    ofx_tree.parse(qfx_file)
+    return ofx_tree.convert()
+
+
+def add_properties(positions, dividends):
+
+    def get_value(i, first_choice, second_choice):
+        return i.get(first_choice) if first_choice in i.keys() else i.get(second_choice)
+
+    tickers = " ".join(pos["ticker"] for pos in positions)
+    yf_tickers = yf.Tickers(tickers)
+    for position in positions:
+        info = yf_tickers.tickers[position['ticker']].info
+        position['sector'] = get_value(info, 'sector', 'category')
+        position['industry'] = get_value(info, 'industry', 'category')
+        position['quote_type'] = info.get('quoteType')
+        position['display_name'] = get_value(info, 'displayName', 'shortName')
+        position['dividend_yield'] = info.get('dividendYield')
+        position['dividend_ex_date'] = datetime.fromtimestamp(info.get('exDividendDate')) if 'exDividendDate' in info.keys() else ''
+        position['beta'] = info.get('beta')
+        position['analyst_recommendation_mean'] = info.get('recommendationMean')
+        position['analyst_recommendation'] = info.get('recommendationKey')
+        position['analyst_average_rating'] = info.get('averageAnalystRating')
+        position['dividends_earned'] = dividends[position['ticker']]['dividends'] if position['ticker'] in dividends else 0
+        #print(f"  info: {info}")
+    return positions
+
+
+def calculate_dividends(transactions):
+    summary = {}
+    for transaction in transactions:
+        ticker = transaction['ticker']
+        if ticker == "":
+            continue
+        if transaction['tx_type'] in ['DIV']:
+            if ticker not in summary:
+                summary[ticker] = {
+                    'dividends': Decimal(0)
+                }
+            summary[ticker]['dividends'] += Decimal(transaction['amount'])
+    return summary
+
+
+def aggregate_by(positions, factor):
+    total_market_value = sum(pos['market_value'] for pos in positions)
+    groupings = {}
+    for pos in positions:
+        grouping_name = pos[factor]
+
+        if grouping_name not in groupings:
+            groupings[grouping_name] = {
+                'market_value': Decimal(0.0),
+                'weighted_div_yield_numerator': Decimal(0.0)
+            }
+        market_value = pos['market_value']
+        groupings[grouping_name]['market_value'] += market_value
+        if 'beta' in pos and not pos['beta'] is None:
+            if 'weighted_beta_numerator' not in groupings[grouping_name]:
+                groupings[grouping_name]['weighted_beta_numerator'] = Decimal(0.0)
+            groupings[grouping_name]["weighted_beta_numerator"] += market_value * Decimal(pos['beta'])
+        groupings[grouping_name]['weighted_div_yield_numerator'] += market_value * Decimal(pos['dividend_yield'])
+
+    for grouping_name, grouping in groupings.items():
+        groupings[grouping_name]['portfolio_share'] = grouping['market_value'] / total_market_value
+        if 'weighted_beta_numerator' in grouping:
+            grouping['beta'] = grouping['weighted_beta_numerator'] / grouping['market_value']
+            grouping.pop('weighted_beta_numerator')
+        grouping['dividend_yield'] = grouping['weighted_div_yield_numerator'] / grouping['market_value']
+        grouping.pop('weighted_div_yield_numerator')
+
+    return groupings
+
+
+def calc_summary(positions):
+
+    return {
+        'by_sector' : aggregate_by(positions, 'sector'),
+        'by_industry': aggregate_by(positions, 'industry'),
+        'by_instrument': aggregate_by(positions, 'quote_type')
+    }
 
 
 def main():
@@ -163,8 +301,20 @@ def main():
     parser.add_argument('input_file', help='Path to the QFX file to use as input.')
     args = parser.parse_args()
     qfx_file = args.input_file
-    convert_qfx_to_csv(qfx_file, sys.stdout)
-
+    name = os.path.splitext(os.path.basename(qfx_file))[0]
+    dir_name = os.path.dirname(qfx_file)
+    ofx = parse_ofx(qfx_file)
+    securities_map = get_securities_map(ofx.securities)
+    transactions = get_transactions(ofx, securities_map)
+    to_csv(transactions, os.path.join(dir_name, f"{name}_transactions.csv"))
+    to_json(transactions, os.path.join(dir_name, f"{name}_transactions.json"))
+    positions = get_positions(ofx, securities_map)
+    dividends = calculate_dividends(transactions)
+    positions = add_properties(positions, dividends)
+    to_csv(positions, os.path.join(dir_name, f"{name}_positions.csv"))
+    to_json(positions, os.path.join(dir_name, f"{name}_positions.json"))
+    summary = calc_summary(positions)
+    to_json(summary, os.path.join(dir_name, f"{name}_summary.json"))
 
 if __name__ == '__main__':
     main()
