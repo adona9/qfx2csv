@@ -257,7 +257,7 @@ def calculate_dividends(transactions):
     return summary
 
 
-def aggregate_by(positions, factor):
+def group_by(factor, positions):
     total_market_value = sum(pos['market_value'] for pos in positions)
     groupings = {}
     for pos in positions:
@@ -278,21 +278,20 @@ def aggregate_by(positions, factor):
 
     for grouping_name, grouping in groupings.items():
         groupings[grouping_name]['portfolio_share'] = grouping['market_value'] / total_market_value
+        grouping['dividend_yield'] = grouping['weighted_div_yield_numerator'] / grouping['market_value']
+        grouping.pop('weighted_div_yield_numerator')
         if 'weighted_beta_numerator' in grouping:
             grouping['beta'] = grouping['weighted_beta_numerator'] / grouping['market_value']
             grouping.pop('weighted_beta_numerator')
-        grouping['dividend_yield'] = grouping['weighted_div_yield_numerator'] / grouping['market_value']
-        grouping.pop('weighted_div_yield_numerator')
 
     return groupings
 
 
-def calc_summary(positions):
-
+def calc_group_by(positions):
     return {
-        'by_sector' : aggregate_by(positions, 'sector'),
-        'by_industry': aggregate_by(positions, 'industry'),
-        'by_instrument': aggregate_by(positions, 'quote_type')
+        'by_sector' : group_by('sector', positions),
+        'by_industry': group_by('industry', positions),
+        'by_instrument': group_by('quote_type', positions)
     }
 
 
@@ -313,8 +312,10 @@ def main():
     positions = add_properties(positions, dividends)
     to_csv(positions, os.path.join(dir_name, f"{name}_positions.csv"))
     to_json(positions, os.path.join(dir_name, f"{name}_positions.json"))
-    summary = calc_summary(positions)
+    summary = calc_group_by(positions)
     to_json(summary, os.path.join(dir_name, f"{name}_summary.json"))
+    to_csv([{'sector': key, **value} for key, value in summary['by_sector'].items()], os.path.join(dir_name, f'{name}_grouped_by_sector.csv'))
+
 
 if __name__ == '__main__':
     main()
