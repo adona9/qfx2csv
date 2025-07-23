@@ -1,5 +1,9 @@
 import json
 import os
+import traceback
+
+import pandas as pd
+import pytz
 from decimal import Decimal
 
 import yfinance as yf
@@ -13,11 +17,9 @@ from ofxtools.models.invest.transactions import INCOME
 from ofxtools.models.invest.transactions import INVBANKTRAN
 
 import csv
-import sys
 import re
 import argparse
-from datetime import datetime, timezone
-
+from datetime import datetime, timezone, timedelta
 
 # https://ofxtools.readthedocs.io/en/latest/parser.html
 
@@ -218,27 +220,42 @@ def parse_ofx(qfx_file):
     return ofx_tree.convert()
 
 
-def add_properties(positions, dividends):
+def add_properties(positions, dividends_earned):
 
     def get_value(i, first_choice, second_choice):
         return i.get(first_choice) if first_choice in i.keys() else i.get(second_choice)
 
+    one_year_ago = datetime.now(pytz.timezone("America/New_York")) - timedelta(days=365)
     tickers = " ".join(pos["ticker"] for pos in positions)
     yf_tickers = yf.Tickers(tickers)
     for position in positions:
         info = yf_tickers.tickers[position['ticker']].info
         position['sector'] = get_value(info, 'sector', 'category')
         position['industry'] = get_value(info, 'industry', 'category')
-        position['quote_type'] = info.get('quoteType')
-        position['display_name'] = get_value(info, 'displayName', 'shortName')
+        position['beta'] = info.get('beta')
         position['dividend_yield'] = info.get('dividendYield')
         position['dividend_ex_date'] = datetime.fromtimestamp(info.get('exDividendDate')) if 'exDividendDate' in info.keys() else ''
-        position['beta'] = info.get('beta')
+        position['dividends_earned'] = dividends_earned[position['ticker']]['dividends'] if position['ticker'] in dividends_earned else 0
+        try:
+            div_data = yf_tickers.tickers[position['ticker']].dividends
+            divs_ttm = div_data[div_data.index > one_year_ago]
+            print(position['ticker'], divs_ttm.size)
+            est_next_div_ex_date = divs_ttm.keys()[divs_ttm.size - 1] + pd.DateOffset(months= 12 / divs_ttm.size)
+            position['next_ex_div_days'] = (est_next_div_ex_date - pd.Timestamp.now(tz='America/New_York')).days
+            position['next_ex_div_date'] = est_next_div_ex_date
+            position['dividend_ttm_count'] = divs_ttm.size
+            position['dividend_last_amount'] = float(divs_ttm.iloc[divs_ttm.size - 1])
+        except RuntimeError:
+            print(f'Something went wrong with {position["ticker"]}')
+            print(traceback.format_exc())
+        position['quote_type'] = info.get('quoteType')
+        position['display_name'] = get_value(info, 'displayName', 'shortName')
         position['analyst_recommendation_mean'] = info.get('recommendationMean')
         position['analyst_recommendation'] = info.get('recommendationKey')
         position['analyst_average_rating'] = info.get('averageAnalystRating')
-        position['dividends_earned'] = dividends[position['ticker']]['dividends'] if position['ticker'] in dividends else 0
-        #print(f"  info: {info}")
+
+
+
     return positions
 
 
