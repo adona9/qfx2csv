@@ -1,5 +1,6 @@
 import json
 import os
+import requests_cache
 import traceback
 
 import pandas as pd
@@ -313,6 +314,7 @@ def calc_group_by(positions):
 
 
 def main():
+    requests_cache.install_cache('yfinance_cache', expire_after=600)
     parser = argparse.ArgumentParser()
     parser.add_argument('input_file', help='Path to the QFX file to use as input.')
     args = parser.parse_args()
